@@ -14,41 +14,66 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-###########
-# IMPORTS #
-###########
+#######################
+# IMPORTS/DATA INGEST #
+#######################
 
 # load numina math lean for training
-ds = load_dataset("AI-MO/NuminaMath-LEAN")
+original_ds = load_dataset("AI-MO/NuminaMath-LEAN")
 
-#split into 80 - 20 train/test
-split_ds = ds["train"].train_test_split(test_size=0.2)
+# scrub dataset/reformat such that SFT is viable
+# see here: https://huggingface.co/docs/trl/main/en/sft_trainer#expected-dataset-type-and-format
 
-# train set
-train_set = split_ds["train"]
+def preprocess_ds(datum):
+    return {
+        "prompt": [{"role": "user", "content": datum["problem"]}],
+        "completion": [
+            {"role": "assistant", "content": datum['formal_ground_truth']}
+        ]
+    }
 
-#create validation set and test sets (10% each, or 50% of 20% each)
+# format and remove all columns
+formatted_ds = original_ds.map(preprocess_ds, 
+                      remove_columns=["uuid", "question_type", "answer", "author", "formal_statement", "ground_truth_type", "formal_proof", "rl_data", "source", "problem_type", "exam"])
 
-valid_test_set = split_ds["test"].train_test_split(test_size=0.5)
-valid_set = valid_test_set["train"]
-test_set = valid_test_set["test"]
+#print(next(iter(formatted_ds["train"])))
+# #split into 80 - 20 train/test
 
-ds_splits = DatasetDict({
-        'train': train_set,
-        'test': test_set,
-        'valid': valid_set
-    })
+# due to time constraints, split into a 0.5%/99.5%. So that's roughly 500 questions/datums to deal with for training
+# we did this because training with all ~105000 examples was going to take hundreds of hours, or even 80% would have been rough.
+# note: this may have been due to inefficient choices... we could see if this works on Unsloth?
+#split_ds = formatted_ds["train"].train_test_split(test_size=0.20)
+split_ds = formatted_ds["train"].train_test_split(test_size=0.997)
+print(split_ds)
+# # train set
+train_set = formatted_ds["train"]
 
-# print before and after splits
-print(f"Before:\n {ds}\n")
+# create validation set and test sets (10% each, or 50% of 20% each)
+# valid_test_set = split_ds["test"].train_test_split(test_size=0.5)
+# valid_set = valid_test_set["train"]
+# test_set = valid_test_set["test"]
+
+ds_splits = DatasetDict(
+    {
+        'train': split_ds["train"]
+    }
+)
+# ds_splits = DatasetDict({
+#         'train': train_set,
+#         'test': test_set,
+#         'valid': valid_set
+#     })
+
+# # print before and after splits
+print(f"Before:\n {original_ds}\n")
 print(f"After:\n {ds_splits}\n")
 
 
-##########################
-# SUPERVISED FINE TUNING #
-##########################
+# ##########################
+# # SUPERVISED FINE TUNING #
+# ##########################
 
-# Taken from sft_trainer.py in lean-dojo
+# # Taken from sft_trainer.py in lean-dojo
 class SFTTrainerClass:
     def __init__(self, model_name: str, output_dir: str, epochs_per_repo: int,
                  batch_size: int, lr: float):
@@ -80,7 +105,10 @@ class SFTTrainerClass:
         trainer.train()
         print("trainer is finished")
 
-sf_trainer = SFTTrainerClass("HuggingFaceTB/SmolLM2-135M-Instruct", "outputs", 1, 1, 2e-5)
+# Create the trainer, give it a batch size of 10 and learning rate of 0.02 (used to be like 2e-05)
+sf_trainer = SFTTrainerClass("HuggingFaceTB/SmolLM2-135M-Instruct", "outputs", 1, 10, .02)
 
+# train with dataset
 sf_trainer.train(ds_splits["train"])
+
 print("finished")
